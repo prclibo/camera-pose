@@ -22,11 +22,6 @@ class CheckOwnedStorage;
 template<>
 class CheckOwnedStorage<OwnedStorage> {};
 
-template<bool T>
-class Assert;
-template<>
-class Assert<true> {};
-
 /** 
  * \brief A base class whose inheritants will have their own storage of data.
  */
@@ -74,25 +69,38 @@ protected:
     ~SharedStorage() {}
 };
 
-/*
-template<typename T, 
-    template<typename, template<typename, int> class> class _Distortion,
+template<typename Distortion,
     template<typename, int> class _Storage = OwnedStorage>
-class Camera
+class Camera : public _Storage<typename Traits<Camera<Distortion, _Storage> >::Scalar, Traits<Camera<Distortion, _Storage> >::kDataSize>
 {
+    typedef Camera<Distortion, _Storage> Self;
+    typedef typename Traits<Self>::Storage Storage;
+    typedef typename Traits<Self>::Scalar T;
+public:
     Camera();
     Camera(T* data);
     Camera(const T* data);
-    Camera(const Self& other) : Storage(other), orientation_(Storage::data()), location_(Storage::data()) {}
-};*/
+    Camera(const Self& other) : Storage(other) {}
+
+public:
+    void project(const T incident[3], T pixel[2], T jacobRay[3], T* jacobParam) const;
+    const T& fx() const { return Storage::data()[0]; }
+    const T& fy() const { return Storage::data()[1]; }
+    const T& px() const { return Storage::data()[2]; }
+    const T& py() const { return Storage::data()[3]; }
+    const T& skew() const { return Storage::data()[4]; }
+
+private:
+    Distortion distortion_;
+};
 
 namespace util
 {
 template<typename T>
-void unitizeZ(const T* xyz, T* xy1, T* jacob = NULL)
+void unitizeZ(const T* xyz, T* uv1, T* jacob = NULL)
 {
-    xy1[0] = xyz[0] / xyz[2];
-    xy1[1] = xyz[1] / xyz[2];
+    uv1[0] = xyz[0] / xyz[2];
+    uv1[1] = xyz[1] / xyz[2];
 
     if (jacob)
     {
@@ -152,34 +160,45 @@ public:
 };
 
 template<typename PrevDistortion = DistortionScalar<double> >
-class BrownRadialDistortion : public Traits<BrownRadialDistortion<PrevDistortion> >::Storage
+class BrownDistortion : public PrevDistortion
 {
-    typedef BrownRadialDistortion<PrevDistortion> Self;
-    typedef typename Traits<Self>::Scalar T;
-    typedef typename Traits<Self>::Storage Storage;
-    enum { kDataSize = Traits<Self>::kDataSize };
-private:
-    BrownRadialDistortion() : prev_(NULL) {}
-    PrevDistortion prev_;
+    typedef BrownDistortion<PrevDistortion> Self;
 public:
-    explicit BrownRadialDistortion(T* data) : Storage(data), prev_(data + kDataSize) {}
+    typedef typename Traits<Self>::Scalar T;
+    enum { kDataSize = Traits<Self>::kDataSize,
+        kMyDataSize = Traits<Self>::kMyDataSize };
+private:
+    BrownDistortion() : data_(NULL) {}
+    T* data_;
+public:
+    explicit BrownDistortion(T* data) : data_(data), PrevDistortion(data + kMyDataSize) {}
     void project(const T* incident, T* refracted, T* jacobDistort = NULL, T* jacobRay = NULL) const;
+    const T& k1() const { return data_[0]; }
+    const T& k2() const { return data_[1]; }
+    const T& p1() const { return data_[2]; }
+    const T& p2() const { return data_[3]; }
+    const T& k3() const { return data_[4]; }
+    T* data() { return data_; }
+    const T* data() const { return data_; }
 };
 
 template<typename PrevDistortion = DistortionScalar<double> >
-class BrownDistortion : public Traits<BrownDistortion<PrevDistortion> >::Storage
+class CatadioptricDistortion : public PrevDistortion
 {
-    typedef BrownDistortion<PrevDistortion> Self;
-    typedef typename Traits<Self>::Scalar T;
-    typedef typename Traits<Self>::Storage Storage;
-    enum { kDataSize = Traits<Self>::kDataSize };
-private:
-    BrownDistortion() : prev_(NULL), radial_(NULL) {}
-    BrownRadialDistortion<PrevDistortion> radial_;
-    PrevDistortion prev_;
+    typedef CatadioptricDistortion<PrevDistortion> Self;
 public:
-    explicit BrownDistortion(T* data) : Storage(data), prev_(data + kDataSize), radial_(data) {}
+    typedef typename Traits<Self>::Scalar T;
+    enum { kDataSize = Traits<Self>::kDataSize, 
+        kMyDataSize = Traits<Self>::kMyDataSize };
+private:
+    CatadioptricDistortion() : data_(NULL) {}
+    T* data_;
+public:
+    explicit CatadioptricDistortion(T* data) : data_(data), PrevDistortion(data + kMyDataSize) {}
     void project(const T* incident, T* refracted, T* jacobDistort = NULL, T* jacobRay = NULL) const;
+    const T& xi() const { return data_[0]; }
+    T* data() { return data_; }
+    const T* data() const { return data_; }
 };
 
 template<typename T>
@@ -190,21 +209,29 @@ struct Traits<DistortionScalar<T> >
 };
 
 template<typename PrevDistortion>
-struct Traits<BrownRadialDistortion<PrevDistortion> >
+struct Traits<BrownDistortion<PrevDistortion> >
 {
-    enum { kMyDataSize = 3,
+    enum { kMyDataSize = 5,
         kDataSize = kMyDataSize + Traits<PrevDistortion>::kDataSize };
     typedef typename Traits<PrevDistortion>::Scalar Scalar;
-    typedef SharedStorage<Scalar, kDataSize> Storage;
 };
 
 template<typename PrevDistortion>
-struct Traits<BrownDistortion<PrevDistortion> >
+struct Traits<CatadioptricDistortion<PrevDistortion> >
 {
-    enum { kMyDataSize = 2,
-        kDataSize = kMyDataSize + Traits<BrownRadialDistortion<PrevDistortion> >::kDataSize };
+    enum { kMyDataSize = 1,
+        kDataSize = kMyDataSize + Traits<PrevDistortion>::kDataSize };
     typedef typename Traits<PrevDistortion>::Scalar Scalar;
-    typedef SharedStorage<Scalar, kDataSize> Storage;
+};
+
+template<typename Distortion,
+    template<typename, int> class _Storage>
+struct Traits<Camera<Distortion, _Storage> >
+{
+    enum { kMyDataSize = 5,
+        kDataSize = kMyDataSize + Traits<Distortion>::kDataSize };
+    typedef typename Traits<Distortion>::Scalar Scalar;
+    typedef _Storage<Scalar, kDataSize> Storage;
 };
 
 template<typename T>
@@ -220,101 +247,132 @@ void DistortionScalar<T>::project(const T* incident, T* refracted, T* jacobDisto
 }
 
 template<typename PrevDistortion>
-void BrownRadialDistortion<PrevDistortion>::project(const T* _incident, T* refracted, T* jacobDistort, T* jacobRay) const
+void BrownDistortion<PrevDistortion>::project(const T* _incident, T* refracted, T* jacobDistort, T* jacobRay) const
 {
     enum { prevJacobDistortSize = 3 * Traits<PrevDistortion>::kDataSize };
     const int prevJacobRaySize = 3 * 3;
     T prevJacobDistort[prevJacobDistortSize], prevJacobRay[prevJacobRaySize];
     T incident[3];
-    prev_.project(_incident, incident, jacobDistort ? prevJacobDistort : NULL, jacobRay ? prevJacobRay : NULL);
+    PrevDistortion::project(_incident, incident, jacobDistort ? prevJacobDistort : NULL, jacobRay ? prevJacobRay : NULL);
 
-    T xy1[3], jacobUnitize[2 * 3];
-    util::unitizeZ(incident, xy1, (jacobDistort != NULL | jacobRay != NULL) ? jacobUnitize : NULL);
+    T uv1[3], jacobUnitize[2 * 3];
+    util::unitizeZ(incident, uv1, (jacobDistort != NULL | jacobRay != NULL) ? jacobUnitize : NULL);
 
-    const T& k1 = Storage::data()[0];
-    const T& k2 = Storage::data()[1];
-    const T& k3 = Storage::data()[2];
+    const T& k1 = this->k1();
+    const T& k2 = this->k2();
+    const T& p1 = this->p1();
+    const T& p2 = this->p2();
+    const T& k3 = this->k3();
 
-    const T& x = xy1[0];
-    const T& y = xy1[1];
-    const T r2 = x * x + y * y;
+    const T& u = uv1[0];
+    const T& v = uv1[1];
+    const T u2 = u * u;
+    const T v2 = v * v;
+    const T r2 = u2 + v2;
     const T r4 = r2 * r2;
     const T r6 = r2 * r4;
     const T k = T(1) + k1 * r2 + k2 * r4 + k3 * r6;
-    refracted[0] = x * k;
-    refracted[1] = y * k;
+    refracted[0] = u * k + T(2) * p1 * u * v + p2 * (r2 + T(2) * u2);
+    refracted[1] = v * k + p1 * (r2 + T(2) * v2) + T(2) * p2 * u * v;
     refracted[2] = T(1);
 
     if (jacobDistort != NULL | jacobRay != NULL)
     {
-        T jacobXy[3 * 2];
-        jacobXy[0] = k2*r4 + k3*r6 + x*(T(2)*k1*x + T(4)*k2*x*r2 + T(6)*k3*x*r4) + k1*r2 + T(1);
-        jacobXy[1] = y*(T(2)*k1*x + T(4)*k2*x*r2 + T(6)*k3*x*r4);
-        jacobXy[2] = T(0);
-        jacobXy[3] = x*(T(2)*k1*y + T(4)*k2*y*r2 + T(6)*k3*y*r4);
-        jacobXy[4] = k2*r4 + k3*r6 + y*(T(2)*k1*y + T(4)*k2*y*r2 + T(6)*k3*y*r4) + k1*r2 + T(1);
-        jacobXy[5] = T(0);
+        T jacobuv[3 * 2];
+        jacobuv[0] = k2*r4 + k3*r6 + T(6)*p2*u + T(2)*p1*v + u*(T(2)*k1*u + T(4)*k2*u*r2 + T(6)*k3*u*r4) + k1*r2 + T(1);
+        jacobuv[1] = T(2)*p1*u + T(2)*p2*v + v*(T(2)*k1*u + T(4)*k2*u*r2 + T(6)*k3*u*r4);
+        jacobuv[2] = T(0);
+        jacobuv[3] = T(2)*p1*u + T(2)*p2*v + u*(T(2)*k1*v + T(4)*k2*v*r2 + T(6)*k3*v*r4);
+        jacobuv[4] = k2*r4 + k3*r6 + T(2)*p2*u + T(6)*p1*v + v*(T(2)*k1*v + T(4)*k2*v*r2 + T(6)*k3*v*r4) + k1*r2 + T(1);
+        jacobuv[5] = T(0);
 
         T jacobIncident[9];
-        util::multplyMat3x2x3(jacobXy, jacobUnitize, jacobIncident);
+        util::multplyMat3x2x3(jacobuv, jacobUnitize, jacobIncident);
         if (jacobRay) util::multplyMat3x3x3(jacobIncident, prevJacobRay, jacobRay);
         if (jacobDistort)
         {
-            T jacobXyDistort[6];
-            jacobXyDistort[0] = x*r2;
-            jacobXyDistort[1] = y*r4;
-            jacobXyDistort[2] = x*r6;
-            jacobXyDistort[3] = y*r2;
-            jacobXyDistort[4] = x*r4;
-            jacobXyDistort[5] = y*r6;
-            util::multplyMat3x2x3(jacobXy, jacobXyDistort, jacobDistort);
+            const int jacobDistortSize = 3 * 5;
+
+            jacobDistort[0] = u*r2;
+            jacobDistort[1] = v*r2;
+            jacobDistort[2] = T(0);
+            jacobDistort[3] = u*r4;
+            jacobDistort[4] = v*r4;
+            jacobDistort[5] = T(0);
+            jacobDistort[6] = T(2)*u*v;
+            jacobDistort[7] = u*u + T(3)*v*v;
+            jacobDistort[8] = T(0);
+            jacobDistort[9] = T(3)*u*u + v*v;
+            jacobDistort[10] = T(2)*u*v;
+            jacobDistort[11] = T(0);
+            jacobDistort[12] = u*r6;
+            jacobDistort[13] = v*r6;
+            jacobDistort[14] = T(0);
 
             T jacobPrevDistort[prevJacobDistortSize];
             util::multplyMat3x3xN(jacobIncident, prevJacobDistort, prevJacobDistortSize, jacobPrevDistort);
-            memcpy(jacobDistort + 9, jacobDistort, sizeof(T) * prevJacobDistortSize);
+            memcpy(jacobDistort + jacobDistortSize, jacobPrevDistort, sizeof(T) * prevJacobDistortSize);
         }
     }
 }
 
 template<typename PrevDistortion>
-void BrownDistortion<PrevDistortion>::project(const T* _incident, T* refracted, T* jacobDistort, T* jacobRay) const
+void CatadioptricDistortion<PrevDistortion>::project(const T* _incident, T* refracted, T* jacobDistort, T* jacobRay) const
 {
-    const int prevJacobDistortSize = 3 * Traits<PrevDistortion>::kDataSize;
+    enum { prevJacobDistortSize = 3 * Traits<PrevDistortion>::kDataSize };
+    const int prevJacobRaySize = 3 * 3;
+    T prevJacobDistort[prevJacobDistortSize], prevJacobRay[prevJacobRaySize];
     T incident[3];
-    prev_.project(_incident, incident, jacobDistort ? jacobDistort : NULL, jacobRay ? jacobRay : NULL);
+    PrevDistortion::project(_incident, incident, jacobDistort ? prevJacobDistort : NULL, jacobRay ? prevJacobRay : NULL);
 
-    const int radialJacobDistortSize = 3 * Traits<BrownRadialDistortion<PrevDistortion> >::kMyDataSize;
-    T radialRefracted[3];
-
-    radial_.project(incident, radialRefracted, jacobDistort ? jacobDistort : NULL, 
-            jacobRay ? jacobRay : NULL);
-    assert(radialRefracted[2] == T(1));
-
-    T xy1[3], jacobUnitize[2 * 3];
-    util::unitizeZ(incident, xy1, (jacobDistort != NULL | jacobRay != NULL) ? jacobUnitize : NULL);
-
-    const T& p1 = Storage::data()[0];
-    const T& p2 = Storage::data()[1];
-    T x = xy1[0];
-    T y = xy1[1];
-    T r2 = x * x + y * y;
-
-    T dx = T(2) * p1 * x * y + p2 * (r2 + T(2) * x * x);
-    T dy = p1 * (r2 + T(2) * y * y) + T(2) * p2 * x * y;
-
-    refracted[0] = radialRefracted[0] / radialRefracted[2] + dx;
-    refracted[1] = radialRefracted[1] / radialRefracted[2] + dy;
+    const T& x = incident[0];
+    const T& y = incident[1];
+    const T& z = incident[2];
+    const T r2 = x * x + y * y + z * z;
+    const T r = sqrt(r2);
+    const T& xi = this->xi();
+    const T tmp = xi + z/r;
+    refracted[0] = x/(tmp*r);
+    refracted[1] = y/(tmp*r);
     refracted[2] = T(1);
 
-    T* jacobTangent = jacobDistort + radialJacobDistortSize;
-
+    if (jacobDistort != NULL | jacobRay != NULL)
+    {
+        const T x2 = x * x;
+        const T y2 = y * y;
+        const T z2 = z * z;
+        const T r3 = r2 * r;
+        const T r4 = r3 * r;
+        const T tmp2 = tmp * tmp;
+        T jacobIncident[3 * 3];
+        jacobIncident[0] = T(1)/(tmp*r) - x2/(tmp*r3) + (x2*z)/(tmp2*r4);
+        jacobIncident[1] = (x*y*z)/(tmp2*r4) - (x*y)/(tmp*r3);
+        jacobIncident[2] = T(0);
+        jacobIncident[3] = (x*y*z)/(tmp2*r4) - (x*y)/(tmp*r3);
+        jacobIncident[4] = T(1)/(tmp*r) - y2/(tmp*r3) + (y2*z)/(tmp2*r4);
+        jacobIncident[5] = T(0);
+        jacobIncident[6] = - (x*(T(1)/r - z2/r3))/(tmp2*r) - (x*z)/(tmp*r3);
+        jacobIncident[7] = - (y*(T(1)/r - z2/r3))/(tmp2*r) - (y*z)/(tmp*r3);
+        jacobIncident[8] = T(0);
+        if (jacobRay) util::multplyMat3x3x3(jacobIncident, prevJacobRay, jacobRay);
+        if (jacobDistort)
+        {
+            const int jacobDistortSize = 3 * 1;
+            jacobDistort[0] = -x/(tmp2*r);
+            jacobDistort[1] = -y/(tmp2*r);
+            jacobDistort[2] = T(0);
+            T jacobPrevDistort[prevJacobDistortSize];
+            util::multplyMat3x3xN(jacobIncident, prevJacobDistort, prevJacobDistortSize, jacobPrevDistort);
+            memcpy(jacobDistort + jacobDistortSize, jacobPrevDistort, sizeof(T) * prevJacobDistortSize);
+        }
+    }
 
 }
 
 typedef DistortionScalar<double> DistortionScalard;
-typedef BrownRadialDistortion<DistortionScalard> BrownRadialDistortiond;
 typedef BrownDistortion<DistortionScalard> BrownDistortiond;
-typedef BrownDistortion<CatadioptricDistortion<DistortionScalar<double> > >
+typedef CatadioptricDistortion<DistortionScalard> CatadioptricDistortiond;
+typedef BrownDistortion<CatadioptricDistortiond> BrownCatadioptricDistortiond;
 
 } // geometry
 } // idl
